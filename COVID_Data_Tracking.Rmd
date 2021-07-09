@@ -1,0 +1,425 @@
+---
+title: "CA COVID Data Tracker"
+output: 
+  flexdashboard::flex_dashboard:
+    theme: cosmo
+    vertical_layout: scroll
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(dplyr)
+library(data.table)
+library(plotly)
+library(leaflet)
+library(DT)
+library(shiny)
+library(lubridate)
+library(tigris)
+# cache zip boundaries that are download via tigris package
+options(tigris_use_cache = TRUE)
+```
+
+
+```{r global, include=FALSE}
+#load public data from git repo
+covid_place = fread('https://raw.githubusercontent.com/datadesk/california-coronavirus-data/master/latimes-place-totals.csv')
+covax_place = fread('https://raw.githubusercontent.com/datadesk/california-coronavirus-data/master/cdph-vaccination-zipcode-totals.csv')
+csa = rgdal::readOGR('./Data/Countywide_Statistical_Areas_(CSA).geojson')
+covax_place[,  at_least_one_dose_percent := ifelse( at_least_one_dose_percent > 1, NA,  at_least_one_dose_percent)]
+covax_place[, fully_vaccinated_percent := ifelse(fully_vaccinated_percent > 1, NA, fully_vaccinated_percent)]
+
+#summarize data by county
+#COVID
+out = covid_place[, .(total_confirmed = sum(confirmed_cases), total_population = sum(population), incidence_rate = sum(confirmed_cases)/sum(population)),
+            by = .(county, date)][order(county, date)]
+
+#define population size 
+temp = unique(out[, list(county, total_population)])
+temp = temp[, population_size := gtools::quantcut(total_population , q = 4, label = 4:1)]
+out = temp[out, on = c('county', 'total_population')]
+out[, new_confirmed := total_confirmed - shift(total_confirmed, 1, type="lag"), by = .(county)]
+
+#COVAX
+out1 = covax_place[, .(total_population = sum(population), at_least_one_dose = sum(at_least_one_dose)/sum(population),
+                       fully_vaccinated = sum(fully_vaccinated)/sum(population)),
+            by = .(county, date)][order(county, date)]
+out1[, ':='(at_least_one_dose = ifelse(at_least_one_dose > 1, NA, at_least_one_dose), fully_vaccinated = ifelse(fully_vaccinated > 1, NA, fully_vaccinated))]
+
+#look into big counties
+temp = unique(out1[, list(county, total_population)])
+temp = temp[, population_size := gtools::quantcut(total_population , q = 4, label = 4:1)]
+out1 = temp[out1, on = c('county', 'total_population')]
+```
+
+
+Summary {data-orientation=rows data-icon="fa-info-circle"}
+===================================== 
+Row
+-----------------------------------------------------------------------
+### Vaccination for At Least One Dose
+```{r}
+renderValueBox({
+  temp = covax_place[date == max(date)]
+  valueBox(
+      as.character(paste0(round(100*sum(temp$at_least_one_dose, na.rm = TRUE)/sum(temp$population, na.rm = TRUE), 2), '%')), icon = "fa-thumbs-up"
+    )
+  
+})
+```
+
+### Full Vaccination
+```{r}
+renderValueBox({
+  temp = covax_place[date == max(date)]
+  valueBox(
+      as.character(paste0(round(100*sum(temp$fully_vaccinated, na.rm = TRUE)/sum(temp$population, na.rm = TRUE), 2), '%')),  icon = "fa-pencil"
+    )
+})
+
+```
+
+### Newly Confirmed COVID-19 Cases
+
+```{r}
+renderValueBox({
+  temp = out[date == max(date)]
+  valueBox(
+      as.character(sum(temp$new_confirmed, na.rm = TRUE)),  icon = "fa-thumbtack", color = 'orange'
+    )
+})
+
+```
+
+
+Row 
+-----------------------------------------------------------------------
+### Comparison among Counties
+```{r}
+renderPlotly({
+  temp = out1[out1$date == max(out1$date),]
+  temp$at_least_one_dose = temp$at_least_one_dose*100
+  temp$fully_vaccinated = temp$fully_vaccinated*100
+  plot_ly(data = temp, x = ~ at_least_one_dose, y = ~ fully_vaccinated, type = 'scatter', mode = 'markers', 
+          size = ~ total_population, hoverinfo = 'text',  text = ~ county, 
+          colors = 'Paired', color = ~ county, showlegend = FALSE,
+          sizes = c(10, 50), marker = list(opacity = 0.5, sizemode = 'diameter')) %>%
+  layout( xaxis = list(title = '% of at least one dose'),
+          yaxis = list(title = '% of fully vaccinated'),
+          title = paste0('Vaccination Coverage by County in California (', max(out1$date), ')'))
+})
+```
+
+
+
+Row
+-----------------------------------------------------------------------
+
+### Time Series Data of Confirmed COVID Cases
+
+```{r}
+p1 <- out %>%
+  filter(!is.na(incidence_rate) & population_size %in% c(1)) %>%
+  plot_ly(x = ~ date, y = ~ incidence_rate, color = ~ county, mode = 'scatter') %>%
+  layout( xaxis = list(title = '', type = 'date'),
+          yaxis = list(title = 'Incidence Rate'),
+          legend = list(orientation = 'h'),
+          annotations = list(x = 0.2 , y = 1.05, text = "Incidence rate of COVID confirmed cases", showarrow = F, xref='paper', yref='paper')
+)
+
+p2 <- out %>%
+  filter(!is.na(incidence_rate) & population_size %in% c(1)) %>%
+  plot_ly(x = ~ date, y = ~ new_confirmed, color = ~ county, mode = 'scatter', showlegend = FALSE) %>%
+  layout( xaxis = list(title = '', type = 'date'),
+          yaxis = list(title = 'No. of COVID cases'),
+          annotations = list(x = 0.2 , y = 1.05, text = "Newly confirmed COVID cases", showarrow = F, xref='paper', yref='paper'))
+
+p <- subplot(p1, p2, nrows = 2, shareX = TRUE, shareY = FALSE, margin = 0.05) 
+p
+```
+
+### Vaccine Coverage
+```{r}
+
+p1 <- out1 %>%
+  filter(!is.na(at_least_one_dose) & population_size %in% c(1)) %>%
+  plot_ly(x = ~ date, y = ~ at_least_one_dose, color = ~ county, mode = 'scatter') %>%
+  layout( xaxis = list(title = '', type = 'date'),
+          yaxis = list(title = '% of at least one dose'),
+          legend = list(orientation = 'h'),
+          annotations = list(x = 0.2 , y = 1.05, text = "COVID Vaccine for At Least One Dose", showarrow = F, xref='paper', yref='paper')
+)
+
+p2 <- out1 %>%
+  filter(!is.na(fully_vaccinated) & population_size %in% c(1)) %>%
+  plot_ly(x = ~ date, y = ~ fully_vaccinated, color = ~ county, mode = 'scatter', showlegend = FALSE) %>%
+  layout( xaxis = list(title = '', type = 'date'),
+          yaxis = list(title = '% of fully vaccinated'),
+          annotations = list(x = 0.2 , y = 1.05, text = "COVID Vaccine for Full Coverage", showarrow = F, xref='paper', yref='paper'))
+
+p <- subplot(p1, p2, nrows = 2, shareX = TRUE, shareY = FALSE, margin = 0.05) 
+p
+```
+
+
+Data Exploration {data-icon="ion-stats-bars"}
+=====================================  
+Sidebar {.sidebar data-width=230}
+-----------------------------------------------------------------------
+```{r}
+selectInput('county', 'Select a county', choices = union(unique(covid_place$county), unique(covax_place$county)))
+selectInput('lookback', 'Select a lookback period', choices = c('Last Day', 'Last Week', 'Last Month', 'Three Months', 'Last Year'))
+selectInput('measure', 'Select an outcome', choices = c('COVID Rate', 'At Least One Dose', 'Fully Vaccinated'))
+```
+
+
+
+```{r reactive}
+data <- reactive({
+  if(input$measure == 'COVID Rate'){
+    if(input$county%in%covid_place$county){
+      temp = covid_place[county %in% input$county]
+      temp[, ':='(id = NULL, note = NULL, fips = NULL, `COVID Rate` = round(confirmed_cases/population, 2))]
+      temp[, `COVID Rate` := ifelse(`COVID Rate` > 1, NA, `COVID Rate`)]
+      temp = temp[order(-`COVID Rate`)]
+  }else{
+      temp = NULL
+    }
+  }else if(input$measure == 'At Least One Dose'){
+    if(input$county%in%covax_place$county){
+      temp = covax_place[county %in% input$county]
+      temp[, ':='(fully_vaccinated = NULL, fully_vaccinated_percent = NULL, partially_vaccinated = NULL, partially_vaccinated_percent = NULL)]
+      temp = temp[order(at_least_one_dose_percent)]
+    }else{
+      temp = NULL
+    }
+  }else{
+    if(input$county%in%covax_place$county){
+      temp = covax_place[county %in% input$county]
+      temp[, ':='(at_least_one_dose = NULL, partially_vaccinated_percent = NULL, partially_vaccinated = NULL, at_least_one_dose_percent = NULL)]
+      temp = temp[order(fully_vaccinated_percent)]
+    }else{
+      temp = NULL
+    }
+  }
+  
+  #filter by lookback period
+  if(input$lookback == 'Last Day'){
+    temp = temp[date == max(date)]
+  }
+  
+  if(input$lookback == 'Last Week'){
+    date1 = max(temp$date)-7
+    temp = temp[date>=date1 & date <=max(date)]
+  }
+  
+  if(input$lookback == 'Last Month'){
+    date1 = max(temp$date) %m-% months(1)
+    temp = temp[date>=date1 & date <=max(date)]
+  }
+  
+  if(input$lookback == 'Three Months'){
+    date1 = max(temp$date) %m-% months(3)
+    temp = temp[date>=date1 & date <=max(date)]
+  }
+  
+  if(input$lookback == 'Last Year'){
+    date1 = max(temp$date) %m-% months(12)
+    temp = temp[date>=date1 & date <=max(date)]
+  }
+  
+  return(temp)
+})
+
+shape <- reactive({
+  if(input$measure %in% c('At Least One Dose', 'Fully Vaccinated')){
+    temp2 = zctas(cb = TRUE, starts_with = unique(covax_place$id[covax_place$county == input$county]))
+    dat = covax_place[date == max(date)]
+    dat[, id := as.character(id)]
+    
+    #rank vaccine coverage
+    a_ranks <- rank(dat$at_least_one_dose_percent, ties.method = "first")
+    dat[, `At least one dose (quartile)`:= cut(a_ranks, breaks = quantile(a_ranks, probs = 0:4/4), labels = 1:4, right = TRUE, include.lowest=TRUE)]
+    dat$`At least one dose (quartile)` = as.numeric(dat$`At least one dose (quartile)`)
+    a_ranks <- rank(dat$fully_vaccinated_percent, ties.method = "first")
+    dat[, `fully vaccinated (quartile)`:= cut(a_ranks, breaks = quantile(a_ranks, probs = 0:4/4), labels = 1:4, right = TRUE, include.lowest=TRUE)]
+    dat$`fully vaccinated (quartile)` = as.numeric(dat$`fully vaccinated (quartile)`)
+    
+    #spatial join
+    temp2 = geo_join(temp2, 
+                     dat, 
+                     by_sp = "GEOID10", 
+                     by_df = "id",
+                     how = "left")
+  }else{
+    dat = covid_place[date == max(date) & county == input$county]
+    dat[, `COVID Rate` := confirmed_cases/population]
+    dat[, `COVID Rate` := ifelse(`COVID Rate` > 1, NA, `COVID Rate`)]
+    names(dat)[names(dat) == 'id'] = 'LABEL'
+    a_ranks <- rank(dat$`COVID Rate`, ties.method = "first")
+    dat[, `Risk of COVID`:= cut(a_ranks, breaks = quantile(a_ranks, probs = 0:10/10), labels = 1:10, right = TRUE, include.lowest=TRUE)]
+    dat$`Risk of COVID` = as.numeric(dat$`Risk of COVID`)
+    
+    #countywide statistical areas for LA and ZCTAS for others
+    if(input$county == 'Los Angeles'){
+      csa_data = setDT(csa@data)
+      csa_data = dat[csa_data, on = 'LABEL']
+      csa@data = as.data.frame(csa_data)
+      temp2 = csa
+      
+    }else{
+      temp2 = zctas(cb = TRUE, starts_with = unique(covid_place$id[covid_place$county == input$county]))
+      temp2 = geo_join(temp2, 
+                       dat, 
+                       by_sp = "GEOID10", 
+                       by_df = "LABEL",
+                       how = "left")
+    }
+  }
+  return(temp2)
+})
+
+covid_and_covax <- reactive({
+  temp0 = covid_place[date == max(date) & county == input$county]
+  temp1 = covax_place[date == max(date) & county == input$county]
+  temp0[, ':='(note = NULL, fips = NULL, `COVID Rate` = round(confirmed_cases/population, 2))]
+  temp0$population[temp0$population == 0] = NA
+  temp0[, population_size := cut(population,
+                            breaks=quantile(population,
+                            probs=seq(0, 1, by=0.25), na.rm=T),
+                            include.lowest= TRUE, labels=4:1)]
+  temp0 = temp0[, list(id, name, population_size, `COVID Rate`)]
+  temp0[, `COVID Rate` := ifelse(`COVID Rate` > 1, NA, `COVID Rate`)]
+  temp1 = temp1[, list(id, at_least_one_dose_percent, fully_vaccinated_percent)]
+  temp1$id = as.character(temp1$id)
+  temp2 = merge(temp0, temp1, by = 'id')
+  temp2$population_size = as.numeric(temp2$population_size)
+  temp2 = temp2[at_least_one_dose_percent > 0.05]
+  return(temp2)
+})
+```
+
+Column
+-----------------------------------------------------------------------
+### data table
+```{r}
+renderDataTable({
+  datatable(
+    data(),
+    filter = "top",  # allows filtering on each column
+    extensions = c(
+      "Buttons",  # add download buttons, etc
+      "Scroller"  # for scrolling down the rows rather than pagination
+    ),
+    rownames = FALSE,  # remove rownames
+    style = "bootstrap",
+    class = "compact",
+    width = "100%",
+    options = list(
+      dom = "Blrtip",  # specify content (search box, etc)
+      deferRender = TRUE,
+      scrollY = 300,
+      scroller = TRUE,
+      buttons = list(
+        I("colvis"),  # turn columns on and off
+        "csv",  # download as .csv
+        "excel"  # download as .xlsx
+      )
+    )
+  ) 
+})
+  
+```
+
+### Geographic Targets
+```{r}
+renderPlotly({
+  if(input$measure %in% c('COVID Rate', 'At Least One Dose')){
+    p0 = covid_and_covax()%>%
+    plot_ly(x = ~at_least_one_dose_percent, y = ~ `COVID Rate`, type = 'scatter', mode = 'markers', 
+          size = ~ population_size, hoverinfo = 'text',  text = ~ name, 
+          colors = 'Paired', color = ~ `COVID Rate`, showscale = FALSE, showlegend = FALSE,
+          sizes = c(10, 30), marker = list(opacity = 0.5, sizemode = 'diameter')) %>%
+    layout(xaxis = list(title = '% of at least one dose'),
+          yaxis = list(title = '% of COVID Cases'),
+          title = paste0('Identifying places with high COVID risk but low vaccine coverage'),
+          showscale = FALSE, showlegend = FALSE)
+  }else{
+   p0 =  covid_and_covax()%>%
+    plot_ly(x = ~fully_vaccinated_percent, y = ~ `COVID Rate`, type = 'scatter', mode = 'markers', 
+          size = ~ population_size, hoverinfo = 'text',  text = ~ name, 
+          colors = 'Paired', color = ~ `COVID Rate`, showscale = FALSE, showlegend = FALSE,
+          sizes = c(10, 30), marker = list(opacity = 0.5, sizemode = 'diameter')) %>%
+    layout(xaxis = list(title = '% of fully vaccinated'),
+          yaxis = list(title = '% of COVID Cases'),
+          title = paste0('Identifying places with high COVID risk but low vaccine coverage'),
+          showscale = FALSE, showlegend = FALSE)
+  }
+  
+  p0
+})
+```
+
+
+Column
+-----------------------------------------------------------------------
+### Interactive Map
+```{r}
+renderLeaflet({
+  if(input$measure == 'COVID Rate'){
+    pal <- colorNumeric("YlOrRd", NULL)
+    p = leaflet(data = shape(), options = leafletOptions(minZoom = 9)) %>%
+                 addProviderTiles(providers$CartoDB.Voyager) %>%
+                 addPolygons(color = "#444444",
+                             dashArray = "3",
+                             weight = 0.8,
+                             smoothFactor = 0.5,
+                             opacity = 1.0,
+                             fillOpacity = 0.5,
+                             fillColor = ~pal(`Risk of COVID`),
+                             label = ~paste0(name, ": ", paste(as.character(round(`COVID Rate`*100000, 0)), 'per 100,000 residents')),
+                             layerId = ~ name,
+                             highlightOptions = highlightOptions(color = "white", weight = 2, bringToFront = TRUE)) %>%
+                 addLegend(pal = pal, values = ~ `Risk of COVID`, opacity = 1.0, position =  "bottomleft")
+  }
+  
+  if(input$measure == 'At Least One Dose'){
+    pal <- colorNumeric("YlGn", domain = shape()$`At least one dose (quartile)`)
+    p = leaflet(data = shape(), options = leafletOptions(minZoom = 9)) %>%
+                 addProviderTiles(providers$CartoDB.Voyager) %>%
+                 addPolygons(color = "#444444",
+                             dashArray = "3",
+                             weight = 0.8,
+                             smoothFactor = 0.5,
+                             opacity = 1.0,
+                             fillOpacity = 0.5,
+                             fillColor = ~pal(`At least one dose (quartile)`),
+                             label = ~paste0(ZCTA5CE10, ": ", paste0(as.character(round(at_least_one_dose_percent*100, 2)), '%')),
+                             layerId = ~ ZCTA5CE10,
+                             highlightOptions = highlightOptions(color = "white", weight = 2, bringToFront = TRUE)) %>%
+                 addLegend(pal = pal, values = ~ `At least one dose (quartile)`, opacity = 1.0, position =  "bottomleft")
+  }
+  
+  if(input$measure == 'Fully Vaccinated'){
+    pal <- colorNumeric("YlGn", domain = shape()$`fully vaccinated (quartile)`)
+    p = leaflet(data = shape(), options = leafletOptions(minZoom = 9)) %>%
+                 addProviderTiles(providers$CartoDB.Voyager) %>%
+                 addPolygons(color = "#444444",
+                             dashArray = "3",
+                             weight = 0.8,
+                             smoothFactor = 0.5,
+                             opacity = 1.0,
+                             fillOpacity = 0.5,
+                             fillColor = ~pal(`fully vaccinated (quartile)`),
+                             label = ~paste0(ZCTA5CE10, ": ", paste0(as.character(round(fully_vaccinated_percent*100, 2)), '%')),
+                             layerId = ~ ZCTA5CE10,
+                             highlightOptions = highlightOptions(color = "white", weight = 2, bringToFront = TRUE)) %>%
+                 addLegend(pal = pal, values = ~ `fully vaccinated (quartile)`, opacity = 1.0, position =  "bottomleft")
+  }
+  
+  p
+  
+})
+```
+
