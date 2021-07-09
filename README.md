@@ -12,8 +12,10 @@ California's Department of Public Health is releasing zipcode-level vaccination 
 
 ### Shiny Product
 The shiny web app could be found in the following link, https://agdemo.shinyapps.io/COVID_Data_Tracking/. It includes two sections:
-* A summary 
-* Details by places
+* A summary of the total cases and vaccinations at county-level or state-level
+* Details of the total cases and vaccinations by places such as county statistical areas (CSA) or zip codes
 
+Summary Tab
 ![Summary](img/fig1.png)
+Data Exploration Tab
 ![Details](img/fig2.png)
