@@ -5,4 +5,5 @@ The shiny web app could be found in the following link, https://agdemo.shinyapps
 * A summary 
 * Details by places
 
-![Summary](Screenshot from 2021-07-09 09-57-38.png)
+![Summary](img/fig1.png)
+![Details](img/fig2.png)
